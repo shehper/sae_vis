@@ -257,7 +257,7 @@ def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: TransformerLensWrapper
 
     # Others not yet supported
     elif "_z" in model.hook_point:
-        if model.hook_point_head_index != None:
+        if model.hook_point_head_index is not None:
             return dir @ model.W_O[model.hook_layer][model.hook_point_head_index]
         else:
             return dir @ model.W_O[model.hook_layer].flatten(start_dim=0, end_dim=1)
