@@ -422,6 +422,7 @@ OOMs.",
 class SaeVisConfig:
     # Data
     hook_point: str | None = None
+    hook_point_head_index: int | None = None
     features: int | Iterable[int] | None = None
     batch_size: int | None = None
     minibatch_size_features: int = 256
