@@ -83,6 +83,10 @@ def compute_feat_acts(
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
     feature_act_dir = encoder.W_enc[:, feature_idx]  # (d_in, feats)
     feature_bias = encoder.b_enc[feature_idx]  # (feats,)
+    
+    # Concatenate head outputs if the SAE was trained on concatenated outputs
+    if model_acts.ndim > 3: 
+        model_acts = model_acts.flatten(start_dim=-2, end_dim=-1)
 
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
     x_cent = model_acts - encoder.b_dec
@@ -491,6 +495,9 @@ def _get_feature_data(
         residual, model_acts = model.forward(minibatch, return_logits=False)
         time_logs["(2) Forward passes to gather model activations"] += time.time() - t0
 
+        if cfg.hook_point_head_index is not None:
+            model_acts = model_acts[:, :, cfg.hook_point_head_index, :]
+
         # Compute feature activations from this
         t0 = time.time()
         feat_acts = compute_feat_acts(
@@ -610,7 +617,7 @@ def get_feature_data(
         model, HookedTransformer
     ), "Error: non-HookedTransformer models are not yet supported."
     assert isinstance(cfg.hook_point, str), "Error: cfg.hook_point must be a string"
-    model_wrapper = TransformerLensWrapper(model, cfg.hook_point)
+    model_wrapper = TransformerLensWrapper(model, cfg.hook_point, cfg.hook_point_head_index)
 
     # For each batch of features: get new data and update global data storage objects
     for features in feature_batches:
@@ -1101,6 +1108,8 @@ def get_prompt_data(
 
     resid_post, act_post = model_wrapped(tokens, return_logits=False)
     resid_post: Tensor = resid_post.squeeze(0)
+    if cfg.hook_point_head_index != None:
+        act_post = act_post[:, :, cfg.hook_point_head_index, :]
     feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(
         0
     )  # [seq feats]

@@ -142,13 +142,15 @@ class TransformerLensWrapper(nn.Module):
     function have a standardized signature.
     """
 
-    def __init__(self, model: HookedTransformer, hook_point: str):
+    def __init__(self, model: HookedTransformer, hook_point: str, 
+                 hook_point_head_index: int | None):
         super().__init__()
         assert (
             hook_point in model.hook_dict
         ), f"Error: hook_point={hook_point!r} must be in model.hook_dict"
         self.model = model
         self.hook_point = hook_point
+        self.hook_point_head_index = hook_point_head_index
 
         # Get the layer (so we can do the early stopping in our forward pass)
         layer_match = re.match(r"blocks\.(\d+)\.", hook_point)
@@ -230,6 +232,10 @@ class TransformerLensWrapper(nn.Module):
     def W_out(self):
         return self.model.W_out
 
+    @property
+    def W_O(self):
+        return self.model.W_O
+
 
 def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: TransformerLensWrapper):
     """
@@ -250,6 +256,11 @@ def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: TransformerLensWrapper
         return dir @ model.W_out[model.hook_layer]
 
     # Others not yet supported
+    elif "_z" in model.hook_point:
+        if model.hook_point_head_index != None:
+            return dir @ model.W_O[model.hook_layer][model.hook_point_head_index]
+        else:
+            return dir @ model.W_O[model.hook_layer].flatten(start_dim=0, end_dim=1)
     else:
         raise NotImplementedError(
             "The hook your SAE was trained on isn't yet supported"
