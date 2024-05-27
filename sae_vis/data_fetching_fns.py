@@ -1108,7 +1108,7 @@ def get_prompt_data(
 
     resid_post, act_post = model_wrapped(tokens, return_logits=False)
     resid_post: Tensor = resid_post.squeeze(0)
-    if cfg.hook_point_head_index != None:
+    if cfg.hook_point_head_index is not None:
         act_post = act_post[:, :, cfg.hook_point_head_index, :]
     feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(
         0
