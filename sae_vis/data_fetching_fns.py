@@ -387,8 +387,12 @@ def parse_feature_data(
     t0 = time.time()
 
     # ! Get stats (including quantiles, which will be useful for the prompt-centric visualisation)
+    # Ali: we don't seem to need feature statistics in feature-centric-vis
+    # and it breaks down when processing a large number of tokens
+    # so may as well ignore it for now.
     feature_stats = FeatureStatistics.create(
-        data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)")
+        #data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)")
+        data=None 
     )
     time_logs["(7) Getting data for quantiles"] = time.time() - t0
     t0 = time.time()
@@ -816,19 +820,17 @@ def get_sequences_data(
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
     resid_post_feature_effect = feat_acts_pre_ablation[
         ..., None
-    ] * feature_resid_dir.to(device="cpu")  # shape [batch buf d_model]
+    ].to(device="cuda") * feature_resid_dir  # shape [batch buf d_model]
 
     # Do the ablations, and get difference in logprobs
-    new_resid_post = resid_post_pre_ablation - resid_post_feature_effect
-    new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U.to(
-        device="cpu"
-    )
+    new_resid_post = resid_post_pre_ablation.to(device="cuda") - resid_post_feature_effect
+    new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)).to(device="cuda") @ W_U
     orig_logits = (
         resid_post_pre_ablation / resid_post_pre_ablation.std(dim=-1, keepdim=True)
-    ) @ W_U.to(device="cpu")
-    contribution_to_logprobs = orig_logits.log_softmax(dim=-1).to(
-        device="cpu"
-    ) - new_logits.log_softmax(dim=-1)
+    ).to(device="cuda") @ W_U
+    contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1).to(
+        device="cuda"
+    )
 
     # ! (4A) Use this to compute the most affected tokens by this feature
     # The TopK function can improve efficiency by masking the features which are zero
