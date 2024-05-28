@@ -1028,11 +1028,16 @@ class SaeVisData:
             ), "If encoder isn't an AutoEncoder, it should have weights 'W_enc', 'W_dec', 'b_enc', 'b_dec'"
             d_in, d_hidden = encoder.W_enc.shape
             device = encoder.W_enc.device
-            encoder_cfg = AutoEncoderConfig(d_in=d_in, d_hidden=d_hidden)
+            apply_b_dec_to_input = encoder.cfg.apply_b_dec_to_input
+            encoder_cfg = AutoEncoderConfig(
+                d_in=d_in, d_hidden=d_hidden, apply_b_dec_to_input=apply_b_dec_to_input
+            )
             encoder_wrapper = AutoEncoder(encoder_cfg).to(device)
             encoder_wrapper.load_state_dict(encoder.state_dict(), strict=False)
         else:
             encoder_wrapper = encoder
+
+        # TODO: why are we not doing the same for encoder_B?
 
         sae_vis_data = get_feature_data(
             encoder=encoder_wrapper,

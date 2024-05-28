@@ -144,8 +144,12 @@ class TransformerLensWrapper(nn.Module):
     function have a standardized signature.
     """
 
-    def __init__(self, model: HookedTransformer, hook_point: str, 
-                 hook_point_head_index: int | None):
+    def __init__(
+        self,
+        model: HookedTransformer,
+        hook_point: str,
+        hook_point_head_index: int | None,
+    ):
         super().__init__()
         assert (
             hook_point in model.hook_dict
