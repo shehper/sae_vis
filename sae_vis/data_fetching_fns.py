@@ -83,13 +83,13 @@ def compute_feat_acts(
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
     feature_act_dir = encoder.W_enc[:, feature_idx]  # (d_in, feats)
     feature_bias = encoder.b_enc[feature_idx]  # (feats,)
-    
+
     # Concatenate head outputs if the SAE was trained on concatenated outputs
-    if model_acts.ndim > 3: 
+    if model_acts.ndim > 3:
         model_acts = model_acts.flatten(start_dim=-2, end_dim=-1)
 
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
-    x_cent = model_acts -  encoder.b_dec * encoder.cfg.apply_b_dec_to_input
+    x_cent = model_acts - encoder.b_dec * encoder.cfg.apply_b_dec_to_input
     feat_acts_pre = einops.einsum(
         x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats"
     )
@@ -512,10 +512,13 @@ def _get_feature_data(
         time_logs["(3) Computing feature acts from model acts"] += time.time() - t0
 
         # Add these to the lists (we'll eventually concat)
-        all_feat_acts.append(feat_acts)
-        all_resid_post.append(residual)
+        all_feat_acts.append(feat_acts.to(device="cpu"))
+        all_resid_post.append(residual.to(device="cpu"))
 
         # Update the 1st progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
+        del model_acts
+        torch.cuda.empty_cache()
+
         if progress is not None:
             progress[0].update(1)
 
@@ -617,7 +620,9 @@ def get_feature_data(
         model, HookedTransformer
     ), "Error: non-HookedTransformer models are not yet supported."
     assert isinstance(cfg.hook_point, str), "Error: cfg.hook_point must be a string"
-    model_wrapper = TransformerLensWrapper(model, cfg.hook_point, cfg.hook_point_head_index)
+    model_wrapper = TransformerLensWrapper(
+        model, cfg.hook_point, cfg.hook_point_head_index
+    )
 
     # For each batch of features: get new data and update global data storage objects
     for features in feature_batches:
@@ -628,7 +633,10 @@ def get_feature_data(
         for key, value in new_time_logs.items():
             time_logs[key] += value
 
-    # Now exited, make sure the progress bar is at 100%
+        # Now exited, make sure the progress bar is at 100%
+        del new_feature_data, new_time_logs
+        torch.cuda.empty_cache()
+
     if progress is not None:
         for pbar in progress:
             pbar.n = pbar.total
@@ -806,19 +814,21 @@ def get_sequences_data(
     # ! (4) Compute the logit effect if this feature is ablated
 
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
-    resid_post_feature_effect = (
-        feat_acts_pre_ablation[..., None] * feature_resid_dir
-    )  # shape [batch buf d_model]
+    resid_post_feature_effect = feat_acts_pre_ablation[
+        ..., None
+    ] * feature_resid_dir.to(device="cpu")  # shape [batch buf d_model]
 
     # Do the ablations, and get difference in logprobs
     new_resid_post = resid_post_pre_ablation - resid_post_feature_effect
-    new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U
+    new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U.to(
+        device="cpu"
+    )
     orig_logits = (
         resid_post_pre_ablation / resid_post_pre_ablation.std(dim=-1, keepdim=True)
-    ) @ W_U
-    contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(
-        dim=-1
-    )
+    ) @ W_U.to(device="cpu")
+    contribution_to_logprobs = orig_logits.log_softmax(dim=-1).to(
+        device="cpu"
+    ) - new_logits.log_softmax(dim=-1)
 
     # ! (4A) Use this to compute the most affected tokens by this feature
     # The TopK function can improve efficiency by masking the features which are zero

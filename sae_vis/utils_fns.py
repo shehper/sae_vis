@@ -93,6 +93,33 @@ def k_largest_indices(
     return torch.stack((rows, cols), dim=1)
 
 
+def sample_unique_indices_batch(
+    large_number: int,
+    small_number: int,
+    batch_size: int = 2**24,
+) -> Int[Tensor, "small_number"]:
+    """
+    Sample unique indices from the range [0, large_number) without replacement
+    by sampling in smaller batches if necessary.
+    """
+    if large_number <= batch_size:
+        return sample_unique_indices(large_number, small_number)
+
+    num_batches = (large_number + batch_size - 1) // batch_size
+    indices = []
+    for batch in range(num_batches):
+        start = batch * batch_size
+        end = min((batch + 1) * batch_size, large_number)
+        batch_indices = sample_unique_indices(
+            end - start, min(small_number, end - start)
+        )
+        indices.extend(batch_indices + start)
+        if len(indices) >= small_number:
+            break
+
+    return torch.tensor(indices[:small_number])
+
+
 def sample_unique_indices(
     large_number: int, small_number: int
 ) -> Int[Tensor, "small_number"]:
@@ -139,7 +166,7 @@ def random_range_indices(
 
     # If we have more indices than we need, randomly select k of them
     if len(indices) > k:
-        indices = indices[sample_unique_indices(len(indices), k)]
+        indices = indices[sample_unique_indices_batch(len(indices), k)]
 
     # Adjust indices to account for the buffer
     return indices + torch.tensor([0, buffer[0]]).to(indices.device)
@@ -465,6 +492,18 @@ ASYMMETRIC_RANGES_AND_PRECISIONS: list[tuple[list[float], int]] = [
 ]
 
 
+def calculate_quantiles_in_chunks(data, quantiles_tensor, chunk_size=1000):
+    num_chunks = (data.size(0) + chunk_size - 1) // chunk_size
+    print(f"num chunks: {num_chunks}, chunk size: {chunk_size}")
+    quantile_data = []
+    for i in range(num_chunks):
+        chunk = data[i * chunk_size : (i + 1) * chunk_size].clone()
+        print(chunk.shape, quantiles_tensor.shape)
+        quantile_chunk = torch.quantile(chunk, quantiles_tensor, dim=-1).T
+        quantile_data.append(quantile_chunk)
+    return torch.cat(quantile_data, dim=0).tolist()
+
+
 @dataclass_json
 @dataclass
 class FeatureStatistics:
@@ -531,7 +570,7 @@ class FeatureStatistics:
             _max = data.max(dim=-1).values.tolist()
             frac_nonzero = (data.abs() > 1e-6).float().mean(dim=-1).tolist()
             quantiles_tensor = torch.tensor(quantiles, dtype=data.dtype).to(data.device)
-            quantile_data = torch.quantile(data, quantiles_tensor, dim=-1).T.tolist()
+            quantile_data = calculate_quantiles_in_chunks(data, quantiles_tensor)
 
         quantiles = [round(q, 6) for q in quantiles + [1.0]]
         quantile_data = [[round(q, 6) for q in qd] for qd in quantile_data]
