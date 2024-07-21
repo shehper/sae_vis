@@ -27,6 +27,7 @@ from sae_vis.html_fns import (
     HTML,
     bgColorMap,
     uColorMap,
+    dfa_bgColorMap,
 )
 from sae_vis.model_fns import (
     AutoEncoder,
@@ -384,6 +385,11 @@ class SequenceData:
                 The data for this sequence, in the form of a list of dicts for each token (where the dict stores things
                 like token, feature activations, etc).
         """
+        # print(type(cfg))
+        # print(cfg.__class__.__module__)
+        # print(SequencesConfig)
+        # print(cfg.__class__ == SequencesConfig)
+
         assert isinstance(
             cfg, (PromptConfig, SequencesConfig)
         ), f"Invalid config type: {type(cfg)}"
@@ -734,7 +740,8 @@ class SequenceMultiGroupData:
                 # Here, we stack groups into columns as [1, 3, 3, ...]
                 cols = [
                     (column, 0),
-                    *[(column, 1 + int(i / 3)) for i in range(n_quantile_groups)],
+                    (column, 1),
+                    *[(column, 2 + int(i / 3)) for i in range(n_quantile_groups)],
                 ]
             case _:
                 raise ValueError(
@@ -743,6 +750,10 @@ class SequenceMultiGroupData:
 
         # Create the HTML object, and add all the sequence groups to it, possibly across different columns
         html_obj = HTML()
+        # print(f"len cols: {len(cols)}, cols: {cols}")
+        # print(f"len group sizes: {len(cfg.group_sizes)}, group sizes: {cfg.group_sizes}")
+        # print(f"len seq group data: {len(self.seq_group_data)}, seq group data: {self.seq_group_data}")
+        # raise
         for i, (col, group_size, sequences_group) in enumerate(
             zip(cols, cfg.group_sizes, self.seq_group_data)
         ):
@@ -1281,9 +1292,6 @@ class DFASequenceData:
         JavaScript).
         """
         self.seq_len = len(self.token_ids)
-        # TODO: might have to do. Think about it. 
-        # Continue from here. 
-
 
     def _get_html_data(
         self,
@@ -1396,32 +1404,13 @@ class DFASequenceData:
                 if abs(feat_dfa[i]) > 1e-8:
                     kwargs_this_token_active = dict(
                         featAct=round(feat_dfa[i], PRECISION),
-                        bgColor=bgColorMap(bg_values[i]),
+                        bgColor=dfa_bgColorMap(bg_values[i]),
                     )
-
-                # If prev token active, get the top/bottom logits table, underline color, and loss effect (for hist line)
-                # pos_toks_i, neg_toks_i, pos_val_i, neg_val_i = (
-                #     pos_toks[i],
-                #     neg_toks[i],
-                #     pos_val[i],
-                #     neg_val[i],
-                # )
-                # if len(pos_toks_i) + len(neg_toks_i) > 0:
-                #     # Create dictionary
-                #     kwargs_prev_token_active = dict(
-                #         posToks=pos_toks_i,
-                #         negToks=neg_toks_i,
-                #         posVal=pos_val_i,
-                #         negVal=neg_val_i,
-                #         lossEffect=round(loss_contribution[i], PRECISION),
-                #         uColor=uColorMap(u_values[i]),
-                #     )
-
+                    
             js_data_list.append(
                 dict(
                     tok=unprocess_str_tok(toks[i]),
                     tokID=self.token_ids[i],
-                    # tokenLogit=round(self.token_logits[i], PRECISION),
                     **kwargs_bold,
                     **kwargs_this_token_active,
                     **kwargs_prev_token_active,

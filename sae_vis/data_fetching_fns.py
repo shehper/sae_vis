@@ -234,6 +234,12 @@ def parse_feature_data(
 
     # We're using `cfg.feature_centric_layout` to figure out what data we'll need to calculate during this function
     layout = cfg.feature_centric_layout
+
+    # print(type(layout))
+    # print(layout.__class__.__module__)
+    # print(SaeVisLayoutConfig)
+    # print(layout.__class__ == SaeVisLayoutConfig)
+
     assert isinstance(
         layout, SaeVisLayoutConfig
     ), f"Error: cfg.feature_centric_layout must be a SaeVisLayoutConfig object, got {type(layout)}"
@@ -765,7 +771,8 @@ def get_sequences_data(
         all_dfa_src = []
 
         for i in range(num_batches):
-            print(f"computing source DFA for batch: {i}")
+            if i % 40 == 0 or i == num_batches - 1:
+                print(f"computing source DFA for batch: {i}")
             start_id = i * batch_size
             end_id = (i+1) * batch_size
             curr_tokens = seqs[start_id : end_id]
@@ -789,13 +796,13 @@ def get_sequences_data(
         return all_dfa_src 
 
 
-    if feature_id <= 1:
-        relevant_seqs = tokens[indices_bold[:, 0]].clone()
-        per_src_dfa = get_per_src_dfa(relevant_seqs, feature_id, encoder, model) # (n_bold, T, T)
-        per_src_dfa = per_src_dfa[torch.arange(indices_bold.shape[0]), 
-                                            indices_bold[:, 1], 
-                                            :] # (n_bold, T)
-        print(f"per src dfa shape: {per_src_dfa.shape}")
+    # if feature_id <= 1:
+    relevant_seqs = tokens[indices_bold[:, 0]].clone()
+    per_src_dfa = get_per_src_dfa(relevant_seqs, feature_id, encoder, model) # (n_bold, T, T)
+    per_src_dfa = per_src_dfa[torch.arange(indices_bold.shape[0]), 
+                                        indices_bold[:, 1], 
+                                        :] # (n_bold, T)
+    print(f"per src dfa shape: {per_src_dfa.shape}")
 
     # ! (2) Get the buffer indices
 
@@ -836,7 +843,7 @@ def get_sequences_data(
         tokens, indices_buf[:, 1:], "[n_bold seq 0] [n_bold seq 1]"
     )  # shape [batch buf]
 
-    print(f"token ids shape: {token_ids.shape}")
+    # print(f"token ids shape: {token_ids.shape}")
     # Now, we split into cases depending on whether we're computing the buffer or not. One kinda weird thing: we get
     # feature acts for 2 different reasons (token coloring & ablation), and in the case where we're computing the buffer
     # we need [:, 1:] for coloring and [:, :-1] for ablation, but when we're not we only need [:, bold] for both. So
@@ -934,24 +941,31 @@ def get_sequences_data(
         ]
         sequence_groups_data.append(SequenceGroupData(group_name, seq_data))
 
-        if feature_id <= 1:
-            dfa_buffer = (5, 5)
-            dfa_seq_data = []
-            for i in range(group_sizes_cumsum[group_idx], group_sizes_cumsum[group_idx + 1]):
-                max_dfa_idx = per_src_dfa[i].argmax().item()
-                left_idx = max(0, max_dfa_idx - dfa_buffer[0])
-                right_idx = min(len(per_src_dfa[i]), max_dfa_idx + dfa_buffer[1]+1)
-                per_src_dfa_sublist = [round(f, 4) for f in per_src_dfa[i, left_idx: right_idx].tolist()]
-                dfa_token_ids = relevant_seqs[i, left_idx: right_idx].tolist()
+        # if feature_id <= 1:
+        dfa_buffer = (5, 5)
+        dfa_seq_data = []
+        for i in range(group_sizes_cumsum[group_idx], group_sizes_cumsum[group_idx + 1]):
+            max_dfa_idx = per_src_dfa[i].argmax().item()
+            left_idx = max(0, max_dfa_idx - dfa_buffer[0])
+            right_idx = min(len(per_src_dfa[i]), max_dfa_idx + dfa_buffer[1]+1)
+            per_src_dfa_sublist = [round(f, 4) for f in per_src_dfa[i, left_idx: right_idx].tolist()]
+            dfa_token_ids = relevant_seqs[i, left_idx: right_idx].tolist()
 
-                dfa_seq_data.append(
-                    DFASequenceData(
-                    token_ids=dfa_token_ids,
-                    feat_dfa=per_src_dfa_sublist,
-                ))
+            dfa_seq_data.append(
+                DFASequenceData(
+                token_ids=dfa_token_ids,
+                feat_dfa=per_src_dfa_sublist,
+            ))
 
-            sequence_groups_data.append(SequenceGroupData(group_name + "dfa", dfa_seq_data))
+        sequence_groups_data.append(SequenceGroupData(
+                                    group_name.split("<br>")[0] + "<br>" + "DFA", 
+                                    dfa_seq_data))
     
+    # re-arrange to place activations and DFA next to each other.
+    # if feature_id <= 1:
+    idx = [1, 2, 3, 5, 7, 4, 6, 8, 9, 11, 13, 10, 12, 14, 15, 17, 19, 16, 18, 20, 21, 22]
+    sequence_groups_data = [sequence_groups_data[i-1] for i in idx]
+
     return SequenceMultiGroupData(sequence_groups_data)
 
 

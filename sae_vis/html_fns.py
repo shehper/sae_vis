@@ -30,6 +30,21 @@ def bgColorMap(x: float):
     x2 = max(0.0, min(1.0, x))
     return colors.rgb2hex(BG_COLOR_MAP(x2))
 
+DFA_BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list(
+    "dfa_bg_color_map", ["white", "lightgray"]
+)
+
+def dfa_bgColorMap(x: float):
+    """
+    Returns background color, which is a linear interpolation of x as follows:
+
+        0: white
+        1: teal
+    """
+    # assert min(x, 1-x) > -1e-6, f"Expected 0 <= x <= 1, but got {x}"
+    x2 = max(0.0, min(1.0, x))
+    return colors.rgb2hex(DFA_BG_COLOR_MAP(x2))
+
 
 def uColorMap(x: float) -> str:
     """

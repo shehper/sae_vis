@@ -109,9 +109,9 @@ class SequencesConfig(BaseComponentConfig):
 
     def __post_init__(self):
         # Get list of group lengths, based on the config params
-        self.group_sizes = [self.top_acts_group_size] + [
+        self.group_sizes = [self.top_acts_group_size] * 2 + [
             self.quantile_group_size
-        ] * self.n_quantiles
+        ] * self.n_quantiles * 2
 
     @property
     def help_dict(self) -> dict[str, str]:
