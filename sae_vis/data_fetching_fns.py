@@ -31,6 +31,7 @@ from sae_vis.data_storing_fns import (
     SequenceData,
     SequenceGroupData,
     SequenceMultiGroupData,
+    DFASequenceData
 )
 from sae_vis.model_fns import (
     AutoEncoder,
@@ -140,6 +141,8 @@ def parse_feature_data(
     all_resid_post: Float[Tensor, "... d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     cfg: SaeVisConfig,
+    encoder: AutoEncoder,
+    model: TransformerLensWrapper,
     feature_out_dir: Float[Tensor, "feats d_out"] | None = None,
     corrcoef_neurons: RollingCorrCoef | None = None,
     corrcoef_encoder: RollingCorrCoef | None = None,
@@ -378,6 +381,9 @@ def parse_feature_data(
                 feature_resid_dir=feature_resid_dir[i],
                 W_U=W_U,
                 seq_cfg=layout.seq_cfg,
+                feature_id=feat,
+                encoder=encoder,
+                model=model,
             )
             # Update the 2nd progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
             if progress is not None:
@@ -538,6 +544,8 @@ def _get_feature_data(
         all_resid_post=all_resid_post,
         W_U=model.W_U,
         cfg=cfg,
+        encoder=encoder,
+        model=model,
         feature_out_dir=feature_out_dir,
         corrcoef_neurons=corrcoef_neurons,
         corrcoef_encoder=corrcoef_encoder,
@@ -665,6 +673,9 @@ def get_sequences_data(
     feature_resid_dir: Float[Tensor, "d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     seq_cfg: SequencesConfig,
+    feature_id: Int,
+    encoder: AutoEncoder,
+    model: TransformerLensWrapper,
 ) -> SequenceMultiGroupData:
     """
     This function returns the data which is used to create the sequence visualizations (i.e. the right-hand column of
@@ -743,6 +754,49 @@ def get_sequences_data(
     indices_bold = torch.concat(list(indices_dict.values())).cpu()
     n_bold = indices_bold.shape[0]
 
+
+    def get_per_src_dfa(seqs, feature_id, encoder, model):
+        
+        torch.cuda.empty_cache()
+        batch_size = 1 # = b. Not to be confused with B = len(tokens)
+        assert len(seqs) % batch_size == 0
+        num_batches = len(seqs) // batch_size
+
+        all_dfa_src = []
+
+        for i in range(num_batches):
+            print(f"computing source DFA for batch: {i}")
+            start_id = i * batch_size
+            end_id = (i+1) * batch_size
+            curr_tokens = seqs[start_id : end_id]
+            _, cache = model.model.run_with_cache(curr_tokens) # TODO: this probably needs to be timed.
+            v = cache["v", encoder.cfg.hook_layer] # (b, T, nh, dh)
+            attn_weights = cache["pattern", encoder.cfg.hook_layer]
+
+            pre_sum_Av = attn_weights.unsqueeze(dim=-1) * \
+                        v.transpose(dim0=1, dim1=2).unsqueeze(dim=2) # (b, nh, T, T, dh)   
+
+            pre_sum_Av_cat = pre_sum_Av.permute(dims=(0, 2, 3, 1, 4)
+                                                ).flatten(start_dim=-2, end_dim=-1) # (b, T, T, C)
+            
+            dfa_src = pre_sum_Av_cat @ encoder.W_enc[:, feature_id] # (b, T, T)
+            torch.cuda.empty_cache()
+
+            all_dfa_src.append(dfa_src)
+        
+        all_dfa_src = torch.cat(all_dfa_src, dim=0) # (B, T, T)
+
+        return all_dfa_src 
+
+
+    if feature_id <= 1:
+        relevant_seqs = tokens[indices_bold[:, 0]].clone()
+        per_src_dfa = get_per_src_dfa(relevant_seqs, feature_id, encoder, model) # (n_bold, T, T)
+        per_src_dfa = per_src_dfa[torch.arange(indices_bold.shape[0]), 
+                                            indices_bold[:, 1], 
+                                            :] # (n_bold, T)
+        print(f"per src dfa shape: {per_src_dfa.shape}")
+
     # ! (2) Get the buffer indices
 
     if seq_cfg.buffer is not None:
@@ -782,17 +836,18 @@ def get_sequences_data(
         tokens, indices_buf[:, 1:], "[n_bold seq 0] [n_bold seq 1]"
     )  # shape [batch buf]
 
+    print(f"token ids shape: {token_ids.shape}")
     # Now, we split into cases depending on whether we're computing the buffer or not. One kinda weird thing: we get
     # feature acts for 2 different reasons (token coloring & ablation), and in the case where we're computing the buffer
     # we need [:, 1:] for coloring and [:, :-1] for ablation, but when we're not we only need [:, bold] for both. So
     # we split on cases here.
-    if seq_cfg.compute_buffer:
+    if seq_cfg.compute_buffer: # by default, compute_buffer is True, so we are here. 
         feat_acts_buf = eindex(
             feat_acts,
             indices_buf,
             "[n_bold buf_plus1 0] [n_bold buf_plus1 1] -> n_bold buf_plus1",
         )
-        feat_acts_pre_ablation = feat_acts_buf[:, :-1]
+        feat_acts_pre_ablation = feat_acts_buf[:, :-1] # TODO: why call this pre-ablation?
         feat_acts_coloring = feat_acts_buf[:, 1:]
         resid_post_pre_ablation = eindex(
             resid_post, indices_buf[:, :-1], "[n_bold buf 0] [n_bold buf 1] d_model"
@@ -879,6 +934,24 @@ def get_sequences_data(
         ]
         sequence_groups_data.append(SequenceGroupData(group_name, seq_data))
 
+        if feature_id <= 1:
+            dfa_buffer = (5, 5)
+            dfa_seq_data = []
+            for i in range(group_sizes_cumsum[group_idx], group_sizes_cumsum[group_idx + 1]):
+                max_dfa_idx = per_src_dfa[i].argmax().item()
+                left_idx = max(0, max_dfa_idx - dfa_buffer[0])
+                right_idx = min(len(per_src_dfa[i]), max_dfa_idx + dfa_buffer[1]+1)
+                per_src_dfa_sublist = [round(f, 4) for f in per_src_dfa[i, left_idx: right_idx].tolist()]
+                dfa_token_ids = relevant_seqs[i, left_idx: right_idx].tolist()
+
+                dfa_seq_data.append(
+                    DFASequenceData(
+                    token_ids=dfa_token_ids,
+                    feat_dfa=per_src_dfa_sublist,
+                ))
+
+            sequence_groups_data.append(SequenceGroupData(group_name + "dfa", dfa_seq_data))
+    
     return SequenceMultiGroupData(sequence_groups_data)
 
 

@@ -593,13 +593,13 @@ class SequenceGroupData:
     @property
     def max_feat_act(self) -> float:
         """Returns maximum value of feature activation over all sequences in this group."""
-        return max_or_1([act for seq in self.seq_data for act in seq.feat_acts])
+        return max_or_1([act for seq in self.seq_data if type(seq) == SequenceData for act in seq.feat_acts])
 
     @property
     def max_loss_contribution(self) -> float:
         """Returns maximum value of loss contribution over all sequences in this group."""
         return max_or_1(
-            [loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True
+            [loss for seq in self.seq_data if type(seq) == SequenceData for loss in seq.loss_contribution], abs=True
         )
 
     def _get_html_data(
@@ -1030,7 +1030,8 @@ class SaeVisData:
             device = encoder.W_enc.device
             apply_b_dec_to_input = encoder.cfg.apply_b_dec_to_input
             encoder_cfg = AutoEncoderConfig(
-                d_in=d_in, d_hidden=d_hidden, apply_b_dec_to_input=apply_b_dec_to_input
+                d_in=d_in, d_hidden=d_hidden, apply_b_dec_to_input=apply_b_dec_to_input, 
+                hook_layer=encoder.cfg.hook_layer,
             )
             encoder_wrapper = AutoEncoder(encoder_cfg).to(device)
             encoder_wrapper.load_state_dict(encoder.state_dict(), strict=False)
@@ -1257,3 +1258,195 @@ class SaeVisData:
         )
 
         return self
+
+@dataclass_json
+@dataclass
+class DFASequenceData:
+    """
+    This contains all the data necessary to make a sequence of tokens in the vis. See diagram in readme:
+
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
+
+    Always-visible data:
+        token_ids:              List of token IDs in the sequence
+        feat_dfa:              Sizes of activations on this sequence
+    """
+
+    token_ids: list[int] = field(default_factory=list)
+    feat_dfa: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """
+        Filters the logits & token IDs by removing any elements which are zero (this saves space in the eventual
+        JavaScript).
+        """
+        self.seq_len = len(self.token_ids)
+        # TODO: might have to do. Think about it. 
+        # Continue from here. 
+
+
+    def _get_html_data(
+        self,
+        cfg: PromptConfig | SequencesConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
+        """
+        Args:
+
+        Returns:
+            js_data: list[dict[str, Any]]
+                The data for this sequence, in the form of a list of dicts for each token (where the dict stores things
+                like token, feature activations, etc).
+        """
+        assert isinstance(
+            cfg, (PromptConfig, SequencesConfig)
+        ), f"Invalid config type: {type(cfg)}"
+        seq_group_id = component_specific_kwargs.get("seq_group_id", None)
+        max_feat_dfa = component_specific_kwargs.get("max_feat_dfa", None)
+        # max_loss_contribution = component_specific_kwargs.get(
+        #     "max_loss_contribution", None
+        # )
+        bold_idx = component_specific_kwargs.get("bold_idx", None)
+        permanent_line = component_specific_kwargs.get("permanent_line", False)
+        first_in_group = component_specific_kwargs.get("first_in_group", True)
+        title = component_specific_kwargs.get("title", None)
+        hover_above = component_specific_kwargs.get("hover_above", False)
+
+        # If we didn't supply a sequence group ID, then we assume this sequence is on its own, and give it a unique ID
+        if seq_group_id is None:
+            seq_group_id = f"prompt-{column:03d}"
+
+        # If we didn't specify bold_idx, then set it to be the midpoint
+        if bold_idx is None:
+            bold_idx = self.seq_len // 2
+
+        # If we only have data for the bold token, we pad out everything with zeros or empty lists
+        only_bold = isinstance(cfg, SequencesConfig) and not (cfg.compute_buffer)
+        if only_bold:
+            assert bold_idx != "max", "Don't know how to deal with this case yet."
+            feat_dfa = [
+                self.feat_dfa[0] if (i == bold_idx) else 0.0
+                for i in range(self.seq_len)
+            ]
+        else:
+            feat_dfa = deepcopy(self.feat_dfa)
+
+        # Get values for converting into colors later
+        bg_denom = max_feat_dfa or max_or_1(self.feat_dfa)
+        # u_denom = max_loss_contribution or max_or_1(self.loss_contribution, abs=True)
+        bg_values = (np.maximum(feat_dfa, 0.0) / max(1e-4, bg_denom)).tolist()
+        # u_values = (np.array(loss_contribution) / max(1e-4, u_denom)).tolist()
+
+        # If we sent in a prompt rather than this being sliced from a longer sequence, then the pos_ids etc will be shorter
+        # than the token list by 1, so we need to pad it at the first token
+        if isinstance(cfg, PromptConfig):
+            assert (
+                len(feat_dfa)
+                == len(self.token_ids) - 1
+            ), "If this is a single prompt, these lists must be the same length as token_ids or 1 less"
+            feat_dfa = [[]] + feat_dfa
+        assert (
+            len(feat_dfa)
+            == len(self.token_ids)
+        ), "If this is part of a sequence group etc are given, they must be the same length as token_ids"
+
+        # Process the tokens to get str toks
+        toks = to_str_tokens(decode_fn, self.token_ids)
+        # pos_toks = [to_str_tokens(decode_fn, pos) for pos in pos_ids]
+        # neg_toks = [to_str_tokens(decode_fn, neg) for neg in neg_ids]
+
+        # Define the JavaScript object which will be used to populate the HTML string
+        js_data_list = []
+
+        for i in range(len(self.token_ids)):
+            # We might store a bunch of different case-specific data in the JavaScript object for each token. This is
+            # done in the form of a disjoint union over different dictionaries (which can each be empty or not), this
+            # minimizes the size of the overall JavaScript object. See function in `tokens_script.js` for more.
+            kwargs_bold: dict[str, bool] = {}
+            kwargs_hide: dict[str, bool] = {}
+            kwargs_this_token_active: dict[str, Any] = {}
+            kwargs_prev_token_active: dict[str, Any] = {}
+            kwargs_hover_above: dict[str, bool] = {}
+
+            # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
+            if bold_idx is not None:
+                kwargs_bold["isBold"] = (bold_idx == i) or (
+                    bold_idx == "max" and i == np.argmax(feat_dfa).item()
+                )
+                if kwargs_bold["isBold"] and permanent_line:
+                    kwargs_bold["permanentLine"] = True
+
+            # If we only have data for the bold token, we hide all other tokens' hoverdata (and skip other kwargs)
+            if (
+                only_bold
+                and isinstance(bold_idx, int)
+                and (i not in {bold_idx, bold_idx + 1})
+            ):
+                kwargs_hide["hide"] = True
+
+            else:
+                # Get args if we're making the tooltip hover above token (default is below)
+                if hover_above:
+                    kwargs_hover_above["hoverAbove"] = True
+
+                # If feature active on this token, get background color and feature act (for hist line)
+                if abs(feat_dfa[i]) > 1e-8:
+                    kwargs_this_token_active = dict(
+                        featAct=round(feat_dfa[i], PRECISION),
+                        bgColor=bgColorMap(bg_values[i]),
+                    )
+
+                # If prev token active, get the top/bottom logits table, underline color, and loss effect (for hist line)
+                # pos_toks_i, neg_toks_i, pos_val_i, neg_val_i = (
+                #     pos_toks[i],
+                #     neg_toks[i],
+                #     pos_val[i],
+                #     neg_val[i],
+                # )
+                # if len(pos_toks_i) + len(neg_toks_i) > 0:
+                #     # Create dictionary
+                #     kwargs_prev_token_active = dict(
+                #         posToks=pos_toks_i,
+                #         negToks=neg_toks_i,
+                #         posVal=pos_val_i,
+                #         negVal=neg_val_i,
+                #         lossEffect=round(loss_contribution[i], PRECISION),
+                #         uColor=uColorMap(u_values[i]),
+                #     )
+
+            js_data_list.append(
+                dict(
+                    tok=unprocess_str_tok(toks[i]),
+                    tokID=self.token_ids[i],
+                    # tokenLogit=round(self.token_logits[i], PRECISION),
+                    **kwargs_bold,
+                    **kwargs_this_token_active,
+                    **kwargs_prev_token_active,
+                    **kwargs_hover_above,
+                )
+            )
+
+        # Create HTML string (empty by default since sequences are added by JavaScript) and JS data
+        html_str = ""
+        js_seq_group_data: dict[str, Any] = {"data": [js_data_list]}
+
+        # Add group-specific stuff if this is the first sequence in the group
+        if first_in_group:
+            # Read HTML from file, replace placeholders with real ID values
+            html_str = (
+                Path(__file__).parent / "html" / "sequences_group_template.html"
+            ).read_text()
+            html_str = html_str.replace("SEQUENCE_GROUP_ID", seq_group_id)
+
+            # Get title of sequence group, and the idSuffix to match up with a histogram
+            js_seq_group_data["idSuffix"] = id_suffix
+            if title is not None:
+                js_seq_group_data["title"] = title
+
+        return HTML(
+            html_data={column: html_str},
+            js_data={"tokenData": {seq_group_id: js_seq_group_data}},
+        )

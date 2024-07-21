@@ -53,6 +53,8 @@ class AutoEncoderConfig:
 
     apply_b_dec_to_input: bool = True
 
+    hook_layer: int | None = None
+
     def __post_init__(self):
         assert (
             int(self.d_hidden is None) + int(self.dict_mult is None) == 1
